@@ -1,0 +1,873 @@
+<!doctype html>
+<!--
+  CHARLOTTE INNOVATION MAP
+
+  HOW TO UPDATE THE MAP
+  1. In Google Sheets, create a new sheet and import places-template.csv (File > Import).
+  2. Publish it: File > Share > Publish to web > choose the sheet > Publish. Copy the link it gives you.
+     Either the "Web page" link or the "Comma-separated values (.csv)" link works.
+  3. Paste that link into SHEET_CSV_URL below. From then on, edit the sheet, not this file.
+     Changes usually show up on the map within about 5 minutes.
+  While SHEET_CSV_URL is empty, the map shows the sample places written further down in this file.
+
+  SHEET COLUMNS
+  name               Required.
+  short_description  One line, shown in the list.
+  description        Full text, shown when a place is opened. Blank lines start new paragraphs.
+  address            Shown under the name.
+  coordinates        Required, like 35.2276, -80.8408. In Google Maps, right-click the spot and click the numbers to copy them.
+  image              Photo (see below). Optional.
+  website            Full link starting with https://. Optional.
+  show               Type FALSE to hide a place without deleting it.
+
+  PHOTOS (image column) can be any one of:
+  - A direct link to an image that is already online (usually ends in .jpg, .png or .webp).
+  - A Google Drive share link. The file must be shared as "Anyone with the link".
+    Google does not officially support showing Drive images on other sites, so these could stop loading.
+  - A file name like colab.jpg, with the photo saved in an "images" folder next to this file.
+  If a photo is moved, renamed or deleted where it's stored, it disappears from the map.
+
+  BACKUP (automatic, nothing to do)
+  Each visitor's browser remembers the last places that loaded correctly. If the sheet can't be
+  reached, or is accidentally broken (e.g. a column header renamed), returning visitors see that
+  saved copy instead of an error. First-time visitors don't have a copy yet.
+
+  IF YOU SEE "Showing saved info. The latest updates couldn't load." ABOVE THE LIST
+  The map is running on its backup, and your sheet changes are NOT showing. Check that:
+  - The sheet is still published (File > Share > Publish to web).
+  - Row 1 still has the column names listed above, spelled the same.
+  - At least one place has a name and coordinates and isn't hidden with FALSE.
+  Once it's fixed, the message goes away on the next page refresh.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Charlotte Innovation Map</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Libre+Franklin:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+<style>
+  :root {
+    --navy: #032b4f;
+    --rust: #c45230;
+    --rust-dark: #a8432a;
+    --sand: #e2d9a2;
+    --sand-light: #f2ebc6;
+    --cream: #f6f4e3;
+    --gray: #f7f7f7;
+    --line: #e7e4d8;
+    --text: #23303c;
+    --muted: #5d6a75;
+    --panel-w: 360px;
+    --font: "Libre Franklin", -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { font-family: var(--font); color: var(--text); background: #fff; -webkit-font-smoothing: antialiased; }
+  button, input { font: inherit; color: inherit; }
+  [hidden] { display: none !important; }
+
+  /* Layout */
+  #app { position: relative; display: flex; height: 100%; overflow: hidden; }
+  #panel {
+    flex: 0 0 var(--panel-w); width: var(--panel-w); height: 100%;
+    display: flex; flex-direction: column; background: #fff;
+    border-right: 1px solid var(--line); z-index: 1001; overflow: hidden;
+  }
+  #map { position: relative; flex: 1; height: 100%; background: #eef0ea; }
+  .view { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+  .scroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+  .grab { display: none; }
+
+  /* List view */
+  .panel-header { padding: 20px 20px 14px; border-bottom: 1px solid var(--line); }
+  .panel-header h1 { margin: 0; font-size: 20px; font-weight: 700; color: var(--navy); letter-spacing: -0.01em; }
+  .panel-header p { margin: 4px 0 14px; font-size: 14px; color: var(--muted); }
+  .backup-notice {
+    margin: 0 0 12px; padding: 8px 12px; border-radius: 8px; background: var(--sand-light);
+    border-left: 3px solid var(--rust); color: var(--rust-dark); font-size: 13px; font-weight: 500;
+  }
+  .search { position: relative; }
+  .search svg { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); width: 16px; height: 16px; color: var(--muted); pointer-events: none; }
+  .search input {
+    width: 100%; height: 40px; padding: 0 12px 0 36px; border: 1px solid var(--line);
+    border-radius: 10px; background: var(--gray); font-size: 15px; outline: none;
+    transition: border-color .15s, background .15s, box-shadow .15s;
+  }
+  .search input:focus { border-color: var(--navy); background: #fff; box-shadow: 0 0 0 3px rgba(3, 43, 79, .12); }
+  .count { margin: 12px 20px 4px; font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+
+  #place-list { list-style: none; margin: 0; padding: 0 0 12px; }
+  .place-item {
+    display: grid; grid-template-columns: 56px 1fr; gap: 14px; align-items: center;
+    width: 100%; padding: 12px 20px; border: 0; background: none; text-align: left; cursor: pointer;
+    transition: background .12s;
+  }
+  .place-item:hover { background: var(--cream); }
+  .place-item:focus-visible { outline: 2px solid var(--navy); outline-offset: -2px; }
+  .place-item[aria-current="true"] { background: var(--sand-light); }
+  .place-item .name { display: block; font-size: 15px; font-weight: 600; color: var(--navy); }
+  .place-item .summary {
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    margin-top: 2px; font-size: 13.5px; line-height: 1.4; color: var(--muted);
+  }
+  .thumb { width: 56px; height: 56px; border-radius: 10px; overflow: hidden; background: var(--sand-light); display: grid; place-items: center; }
+  .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .thumb .letter { font-size: 20px; font-weight: 700; color: var(--navy); }
+  .empty { margin: 24px 20px; font-size: 14px; color: var(--muted); }
+
+  /* Detail view */
+  .detail-bar { display: flex; align-items: center; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  .back-btn {
+    display: inline-flex; align-items: center; gap: 6px; padding: 8px 10px; border: 0; border-radius: 8px;
+    background: none; font-size: 14px; font-weight: 600; color: var(--navy); cursor: pointer;
+  }
+  .back-btn:hover { background: var(--gray); }
+  .back-btn:focus-visible { outline: 2px solid var(--navy); }
+  .back-btn svg { width: 18px; height: 18px; }
+  .detail { display: flex; flex-direction: column; }
+  .detail-photo { aspect-ratio: 16 / 9; background: var(--sand-light); overflow: hidden; }
+  .detail-photo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .detail-head { padding: 18px 20px 0; }
+  .detail-head h2 { margin: 0; font-size: 22px; line-height: 1.25; font-weight: 700; color: var(--navy); outline: none; }
+  .detail-address { display: flex; gap: 6px; margin: 8px 0 0; font-size: 14px; line-height: 1.4; color: var(--muted); }
+  .detail-address svg { flex: 0 0 16px; width: 16px; height: 16px; margin-top: 1px; }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; padding: 16px 20px 4px; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px; height: 38px; padding: 0 16px;
+    border-radius: 999px; font-size: 14px; font-weight: 600; text-decoration: none; transition: background .15s, color .15s;
+  }
+  .btn svg { width: 16px; height: 16px; }
+  .btn-primary { background: var(--rust); color: #fff; }
+  .btn-primary:hover { background: var(--rust-dark); }
+  .btn-secondary { border: 1px solid var(--navy); color: var(--navy); }
+  .btn-secondary:hover { background: var(--navy); color: #fff; }
+  .btn:focus-visible { outline: 2px solid var(--navy); outline-offset: 2px; }
+  .detail-text { padding: 12px 20px 28px; font-size: 15px; line-height: 1.6; }
+  .detail-text p { margin: 0 0 12px; }
+
+  /* Map markers */
+  .pin-wrap { background: none; border: 0; }
+  .pin-wrap svg { display: block; overflow: visible; transform-origin: 50% 95%; transition: transform .15s ease; filter: drop-shadow(0 2px 3px rgba(0, 0, 0, .3)); }
+  .pin-wrap .pin-shape { fill: var(--navy); stroke: #fff; stroke-width: 2; transition: fill .15s; }
+  .pin-wrap.is-hover svg { transform: scale(1.12); }
+  .pin-wrap.is-selected svg { transform: scale(1.22); }
+  .pin-wrap.is-selected .pin-shape { fill: var(--rust); }
+  .pin-wrap:focus-visible { outline: none; }
+  .pin-wrap:focus-visible .pin-shape { stroke: var(--rust); stroke-width: 3; }
+  .leaflet-tooltip.pin-label {
+    padding: 4px 8px; border: 0; border-radius: 6px; background: var(--navy); color: #fff;
+    font-family: var(--font); font-size: 13px; font-weight: 600; box-shadow: 0 2px 8px rgba(0, 0, 0, .2);
+  }
+  .leaflet-tooltip.pin-label::before { border-top-color: var(--navy); }
+  .leaflet-container { font-family: var(--font); }
+  .leaflet-bar a { color: var(--navy); }
+
+  /* Overlays */
+  .status {
+    position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 1100;
+    max-width: 320px; padding: 14px 18px; border-radius: 12px; background: #fff; color: var(--navy);
+    font-size: 14px; font-weight: 500; text-align: center; box-shadow: 0 6px 24px rgba(3, 43, 79, .18);
+  }
+  .status.error { color: var(--rust-dark); }
+  .hint {
+    position: absolute; left: 50%; top: 16px; transform: translateX(-50%); z-index: 1100;
+    padding: 8px 14px; border-radius: 999px; background: rgba(3, 43, 79, .9); color: #fff;
+    font-size: 13px; font-weight: 500; pointer-events: none; opacity: 0; transition: opacity .2s; white-space: nowrap;
+  }
+  .hint.visible { opacity: 1; }
+
+  /* Desktop: list and details sit beside the map */
+  @media (min-width: 768px) {
+    #app.has-panel-left .status, #app.has-panel-left .hint { left: calc(50% + var(--panel-w) / 2); }
+  }
+
+  /* Phones: the map fills the screen and the panel becomes a bottom sheet */
+  @media (max-width: 767px) {
+    #app { display: block; }
+    #map { position: absolute; inset: 0; height: auto; }
+    #panel {
+      position: absolute; left: 0; right: 0; bottom: 0; width: auto; height: 150px;
+      border-right: 0; border-radius: 16px 16px 0 0; box-shadow: 0 -4px 24px rgba(3, 43, 79, .18);
+      transition: height .25s ease;
+    }
+    #panel.dragging { transition: none; }
+    .grab { display: block; flex: 0 0 auto; padding: 8px 0 4px; cursor: grab; touch-action: none; }
+    .grab span { display: block; width: 40px; height: 5px; margin: 0 auto; border-radius: 3px; background: #cfcab6; }
+    .panel-header { padding: 6px 16px 12px; }
+    .panel-header p { display: none; }
+    .panel-header h1 { margin-bottom: 10px; font-size: 18px; }
+    .place-item { padding: 12px 16px; }
+    .detail-bar { padding: 4px 8px; }
+    .detail-photo { order: 3; margin: 4px 16px 0; border-radius: 12px; }
+    .detail-head { order: 1; padding: 12px 16px 0; }
+    .actions { order: 2; padding: 14px 16px 4px; }
+    .detail-text { order: 4; padding: 14px 16px 28px; }
+    .status, .hint { top: 30%; }
+  }
+</style>
+</head>
+<body>
+<div id="app" class="has-panel-left">
+  <aside id="panel" aria-label="Places">
+    <div class="grab" id="grab" role="button" tabindex="0" aria-label="Expand or collapse the places panel" aria-expanded="false"><span></span></div>
+
+    <section class="view" id="list-view">
+      <header class="panel-header" id="list-header">
+        <h1 id="map-title">Charlotte Innovation Map</h1>
+        <p id="map-subtitle">Select a place to learn more.</p>
+        <div class="backup-notice" id="backup-notice" role="status" hidden>Showing saved info. The latest updates couldn't load.</div>
+        <div class="search">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          <input id="search" type="search" placeholder="Search places" aria-label="Search places" autocomplete="off">
+        </div>
+      </header>
+      <div class="scroll">
+        <p class="count" id="count"></p>
+        <ul id="place-list"></ul>
+        <p class="empty" id="list-empty" hidden>No places match your search.</p>
+      </div>
+    </section>
+
+    <section class="view" id="detail-view" hidden>
+      <div class="detail-bar">
+        <button class="back-btn" id="back-btn" type="button" aria-label="Back to all places">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+          All places
+        </button>
+      </div>
+      <div class="scroll">
+        <article class="detail">
+          <div class="detail-photo" id="detail-photo" hidden><img id="detail-img" alt=""></div>
+          <div class="detail-head">
+            <h2 id="detail-name" tabindex="-1"></h2>
+            <p class="detail-address" id="detail-address">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></svg>
+              <span id="detail-address-text"></span>
+            </p>
+          </div>
+          <div class="actions">
+            <a class="btn btn-primary" id="directions" target="_blank" rel="noopener noreferrer">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 11l18-8-8 18-2-8-8-2z"/></svg>
+              Directions
+            </a>
+            <a class="btn btn-secondary" id="website" target="_blank" rel="noopener noreferrer">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>
+              Website
+            </a>
+          </div>
+          <div class="detail-text" id="detail-text"></div>
+        </article>
+      </div>
+    </section>
+  </aside>
+
+  <main id="map" aria-label="Map of places"></main>
+  <div class="status" id="status" role="status" aria-live="polite" hidden></div>
+  <div class="hint" id="hint" aria-hidden="true"></div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+<script>
+(function () {
+  'use strict';
+
+  /* ------------------------------------------------------------------
+     SETTINGS
+     ------------------------------------------------------------------ */
+  var CONFIG = {
+    // Paste the published Google Sheet CSV link here (see the notes at the top of this file).
+    SHEET_CSV_URL: 'https://docs.google.com/spreadsheets/d/e/2PACX-1vRWin8Fu_THKaGjWrf8ZMsT5H6ZIPhnRXuV2CnsawdNvu7TKZbUcbVuK9kXkkbo8uB_FM49tre5a2Ej/pub?gid=0&single=true&output=csv',
+
+    TITLE: 'Charlotte Innovation Map',
+    SUBTITLE: 'Select a place to learn more.',
+
+    // Where the map starts before places load, and how close it zooms in on a place.
+    DEFAULT_CENTER: [35.2271, -80.8431],
+    DEFAULT_ZOOM: 15,
+    FOCUS_ZOOM: 16,
+
+    // Map tiles. OpenStreetMap's free tiles are fine for testing; switch to a provider such as Mapbox for heavy traffic.
+    TILE_URL: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    TILE_ATTRIBUTION: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+  };
+
+  /* Sample places, used only while SHEET_CSV_URL is empty.
+     Coordinates for CO-LAB and Do Greater Charlotte are approximate. */
+  var SAMPLE_PLACES = [
+    {
+      name: 'Truist ITC',
+      short_description: 'Truist innovation center in Truist Center, Uptown.',
+      description: 'Placeholder description. Replace this text in the Google Sheet.\n\nBlank lines in the sheet start a new paragraph, like this one.',
+      address: '214 N Tryon St, Charlotte, NC 28202',
+      coordinates: '35.227572, -80.840803',
+      image: '',
+      website: '',
+      show: 'TRUE'
+    },
+    {
+      name: 'CO-LAB',
+      short_description: "UNC Charlotte's center for entrepreneurship and innovation.",
+      description: 'Placeholder description. Replace this text in the Google Sheet.',
+      address: '301 E 9th St, Charlotte, NC 28202',
+      coordinates: '35.2295, -80.8363',
+      image: '',
+      website: '',
+      show: 'TRUE'
+    },
+    {
+      name: 'Do Greater Charlotte',
+      short_description: 'At Sparkhouse Charlotte Uptown.',
+      description: 'Placeholder description. Replace this text in the Google Sheet.',
+      address: '500 N Tryon St, Charlotte, NC 28202',
+      coordinates: '35.2297, -80.8385',
+      image: '',
+      website: '',
+      show: 'TRUE'
+    }
+  ];
+
+  /* ------------------------------------------------------------------
+     SETUP
+     ------------------------------------------------------------------ */
+  var $ = function (id) { return document.getElementById(id); };
+  var app = $('app'), panel = $('panel'), grab = $('grab');
+  var listView = $('list-view'), detailView = $('detail-view'), listHeader = $('list-header');
+  var listEl = $('place-list'), listEmpty = $('list-empty'), countEl = $('count'), searchEl = $('search');
+  var statusEl = $('status'), hintEl = $('hint');
+
+  var state = { places: [], bySlug: {}, markers: {}, selected: null, sheet: 'peek', peekH: 150, query: '' };
+  var mobileQuery = window.matchMedia('(max-width: 767px)');
+  var isMobile = function () { return mobileQuery.matches; };
+  var canHover = window.matchMedia('(hover: hover)').matches;
+  var embedded = (function () { try { return window.self !== window.top; } catch (e) { return true; } })();
+  var oneFingerLocked = embedded && L.Browser.mobile;
+
+  $('map-title').textContent = CONFIG.TITLE;
+  $('map-subtitle').textContent = CONFIG.SUBTITLE;
+  document.title = CONFIG.TITLE;
+
+  /* Inside another site's page, the map does not grab the page's scrolling:
+     mouse-wheel zoom turns on after a click, and on phones one finger scrolls the page while two fingers move the map. */
+  var map = L.map('map', {
+    zoomControl: false,
+    attributionControl: false,
+    scrollWheelZoom: !embedded,
+    dragging: !oneFingerLocked
+  }).setView(CONFIG.DEFAULT_CENTER, CONFIG.DEFAULT_ZOOM);
+
+  L.control.zoom({ position: 'topright' }).addTo(map);
+  // Map credit shows only the OpenStreetMap notice (required by its license); no Leaflet link or flag.
+  L.control.attribution({
+    position: isMobile() ? 'topleft' : 'bottomright',
+    prefix: false
+  }).addTo(map);
+  L.tileLayer(CONFIG.TILE_URL, { attribution: CONFIG.TILE_ATTRIBUTION, maxZoom: 19 }).addTo(map);
+
+  if (embedded) {
+    map.on('click focus', function () { map.scrollWheelZoom.enable(); });
+    map.on('mouseout blur', function () { map.scrollWheelZoom.disable(); });
+    map.getContainer().addEventListener('wheel', function () {
+      if (!map.scrollWheelZoom.enabled()) showHint('Click the map to zoom with your mouse wheel');
+    }, { passive: true });
+  }
+  if (oneFingerLocked) {
+    map.getContainer().addEventListener('touchmove', function (e) {
+      if (e.touches.length === 1) showHint('Use two fingers to move the map');
+    }, { passive: true });
+  }
+
+  /* ------------------------------------------------------------------
+     DATA
+     ------------------------------------------------------------------ */
+  // Accepts the CSV link, or the web-page link ("pubhtml") that "Publish to web" shows by default.
+  function sheetCsvUrl(url) {
+    var u = url.trim();
+    if (/\/pubhtml(\?|#|$)/.test(u)) {
+      var gid = (u.match(/[?&#]gid=(\d+)/) || [])[1] || '0';
+      return u.replace(/\/pubhtml.*$/, '/pub?gid=' + gid + '&single=true&output=csv');
+    }
+    if (/\/pub(\?|$)/.test(u) && !/output=csv/.test(u)) return u + (u.indexOf('?') === -1 ? '?' : '&') + 'output=csv';
+    return u;
+  }
+
+  /* Backup: each visitor's browser keeps a copy of the last places that loaded correctly.
+     If the sheet can't be reached (or comes back with no usable places), that copy is shown instead.
+     Nothing to maintain; it updates itself every time the sheet loads. */
+  var BACKUP_KEY = 'innovation-map-backup:' + CONFIG.SHEET_CSV_URL;
+
+  function saveBackup(rows) {
+    try { localStorage.setItem(BACKUP_KEY, JSON.stringify(rows)); } catch (e) { /* Storage blocked or full. */ }
+  }
+
+  function readBackup() {
+    try {
+      var rows = JSON.parse(localStorage.getItem(BACKUP_KEY));
+      return Array.isArray(rows) && normalize(rows).length ? rows : null;
+    } catch (e) { return null; }
+  }
+
+  function loadRows() {
+    if (!CONFIG.SHEET_CSV_URL) return Promise.resolve(SAMPLE_PLACES);
+    return fetch(sheetCsvUrl(CONFIG.SHEET_CSV_URL), { cache: 'no-store' })
+      .then(function (res) {
+        if (!res.ok) throw new Error('Sheet request failed with status ' + res.status);
+        return res.text();
+      })
+      .then(csvToObjects)
+      .then(function (rows) {
+        if (!normalize(rows).length) throw new Error('The sheet loaded but had no usable places.');
+        saveBackup(rows);
+        return rows;
+      })
+      .catch(function (err) {
+        var backup = readBackup();
+        if (!backup) throw err;
+        console.warn('Showing saved backup of places. ' + err.message);
+        $('backup-notice').hidden = false;
+        return backup;
+      });
+  }
+
+  // Reads CSV text, including quoted values that contain commas, quotes or line breaks.
+  function parseCSV(text) {
+    var rows = [], row = [], field = '', inQuotes = false;
+    for (var i = 0; i < text.length; i++) {
+      var c = text[i];
+      if (inQuotes) {
+        if (c === '"') {
+          if (text[i + 1] === '"') { field += '"'; i++; } else { inQuotes = false; }
+        } else { field += c; }
+      } else if (c === '"') { inQuotes = true; }
+      else if (c === ',') { row.push(field); field = ''; }
+      else if (c === '\n' || c === '\r') {
+        if (c === '\r' && text[i + 1] === '\n') i++;
+        row.push(field); rows.push(row); row = []; field = '';
+      } else { field += c; }
+    }
+    if (field !== '' || row.length) { row.push(field); rows.push(row); }
+    return rows.filter(function (r) { return r.some(function (v) { return v.trim() !== ''; }); });
+  }
+
+  function csvToObjects(text) {
+    var rows = parseCSV(String(text).replace(/^﻿/, ''));
+    if (!rows.length) return [];
+    var keys = rows[0].map(function (h) {
+      return h.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+    });
+    return rows.slice(1).map(function (r) {
+      var obj = {};
+      keys.forEach(function (k, i) { obj[k] = (r[i] || '').trim(); });
+      return obj;
+    });
+  }
+
+  function pick(row, names) {
+    for (var i = 0; i < names.length; i++) {
+      var v = row[names[i]];
+      if (v != null && String(v).trim() !== '') return String(v).trim();
+    }
+    return '';
+  }
+
+  function parseCoordinates(row) {
+    var text = pick(row, ['coordinates', 'coords', 'lat_lng', 'latlng', 'location']);
+    var lat, lng;
+    if (text) {
+      var m = text.match(/(-?\d+(?:\.\d+)?)\s*[,;\s]\s*(-?\d+(?:\.\d+)?)/);
+      if (m) { lat = parseFloat(m[1]); lng = parseFloat(m[2]); }
+    } else {
+      lat = parseFloat(pick(row, ['latitude', 'lat']));
+      lng = parseFloat(pick(row, ['longitude', 'lng', 'lon', 'long']));
+    }
+    if (!isFinite(lat) || !isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) return null;
+    return [lat, lng];
+  }
+
+  // Turns the image cell into something the page can load.
+  function resolveImage(value) {
+    var v = (value || '').trim();
+    if (!v) return '';
+    var drive = v.match(/drive\.google\.com\/(?:file\/d\/|open\?(?:.*&)?id=|uc\?(?:.*&)?id=|thumbnail\?(?:.*&)?id=)([\w-]{10,})/i);
+    if (drive) return 'https://drive.google.com/thumbnail?id=' + drive[1] + '&sz=w1600';
+    if (/^https?:\/\//i.test(v)) return v;
+    if (/^[\w\- .()]+\.(jpe?g|png|webp|gif|avif)$/i.test(v)) return 'images/' + encodeURIComponent(v);
+    return '';
+  }
+
+  function resolveWebsite(value) {
+    var v = (value || '').trim();
+    if (!v) return '';
+    if (/^https?:\/\//i.test(v)) return v;
+    if (/^www\.|^[a-z0-9-]+(\.[a-z0-9-]+)+(\/|$)/i.test(v)) return 'https://' + v;
+    return '';
+  }
+
+  function slugify(name) {
+    return name.toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '')
+      .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'place';
+  }
+
+  function normalize(rows) {
+    var used = {};
+    var out = [];
+    rows.forEach(function (row, i) {
+      var name = pick(row, ['name', 'place', 'title']);
+      if (!name) { console.warn('Row ' + (i + 2) + ' skipped: no name.'); return; }
+      var show = pick(row, ['show', 'visible']).toLowerCase();
+      if (['false', 'no', '0', 'hide', 'hidden'].indexOf(show) !== -1) return;
+      var coords = parseCoordinates(row);
+      if (!coords) { console.warn('"' + name + '" skipped: coordinates missing or not readable.'); return; }
+      var slug = slugify(name), n = 2;
+      while (used[slug]) slug = slugify(name) + '-' + n++;
+      used[slug] = true;
+      out.push({
+        slug: slug,
+        name: name,
+        summary: pick(row, ['short_description', 'summary', 'tagline']),
+        description: pick(row, ['description', 'details', 'about']),
+        address: pick(row, ['address']),
+        lat: coords[0],
+        lng: coords[1],
+        image: resolveImage(pick(row, ['image', 'photo', 'image_link', 'image_url', 'photo_link'])),
+        website: resolveWebsite(pick(row, ['website', 'url', 'link']))
+      });
+    });
+    return out;
+  }
+
+  /* ------------------------------------------------------------------
+     MARKERS AND LIST
+     ------------------------------------------------------------------ */
+  var PIN_SVG =
+    '<svg width="32" height="40" viewBox="-2 -2 32 40" aria-hidden="true">' +
+    '<path class="pin-shape" d="M14 0C6.27 0 0 6.13 0 13.7 0 23.9 14 36 14 36s14-12.1 14-22.3C28 6.13 21.73 0 14 0z"/>' +
+    '<circle cx="14" cy="13.6" r="5" fill="#fff"/></svg>';
+
+  function renderMarkers() {
+    state.places.forEach(function (p) {
+      var marker = L.marker([p.lat, p.lng], {
+        icon: L.divIcon({ className: 'pin-wrap', html: PIN_SVG, iconSize: [32, 40], iconAnchor: [16, 38], tooltipAnchor: [0, -36] }),
+        title: p.name,
+        alt: p.name,
+        riseOnHover: true,
+        keyboard: true
+      }).addTo(map);
+      if (canHover) marker.bindTooltip(p.name, { direction: 'top', className: 'pin-label' });
+      marker.on('click', function () { select(p.slug); });
+      state.markers[p.slug] = marker;
+    });
+  }
+
+  function thumbFor(p) {
+    var box = document.createElement('span');
+    box.className = 'thumb';
+    var letter = function () {
+      box.textContent = '';
+      var s = document.createElement('span');
+      s.className = 'letter';
+      s.textContent = p.name.charAt(0).toUpperCase();
+      box.appendChild(s);
+    };
+    if (p.image) {
+      var img = document.createElement('img');
+      img.alt = '';
+      img.loading = 'lazy';
+      img.referrerPolicy = 'no-referrer';
+      img.onerror = letter;
+      img.src = p.image;
+      box.appendChild(img);
+    } else {
+      letter();
+    }
+    return box;
+  }
+
+  function renderList() {
+    var q = state.query.trim().toLowerCase();
+    var shown = state.places.filter(function (p) {
+      return !q || (p.name + ' ' + p.summary + ' ' + p.address).toLowerCase().indexOf(q) !== -1;
+    });
+    listEl.textContent = '';
+    shown.forEach(function (p) {
+      var li = document.createElement('li');
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'place-item';
+      btn.dataset.slug = p.slug;
+      if (state.selected === p.slug) btn.setAttribute('aria-current', 'true');
+      var text = document.createElement('span');
+      var name = document.createElement('span');
+      name.className = 'name';
+      name.textContent = p.name;
+      text.appendChild(name);
+      if (p.summary) {
+        var sum = document.createElement('span');
+        sum.className = 'summary';
+        sum.textContent = p.summary;
+        text.appendChild(sum);
+      }
+      btn.appendChild(thumbFor(p));
+      btn.appendChild(text);
+      btn.addEventListener('click', function () { select(p.slug); });
+      btn.addEventListener('mouseenter', function () { markerHover(p.slug, true); });
+      btn.addEventListener('mouseleave', function () { markerHover(p.slug, false); });
+      btn.addEventListener('focus', function () { markerHover(p.slug, true); });
+      btn.addEventListener('blur', function () { markerHover(p.slug, false); });
+      li.appendChild(btn);
+      listEl.appendChild(li);
+    });
+    listEmpty.hidden = shown.length > 0;
+    countEl.textContent = shown.length === 1 ? '1 place' : shown.length + ' places';
+  }
+
+  function markerEl(slug) {
+    var m = state.markers[slug];
+    return m && m.getElement();
+  }
+
+  function markerHover(slug, on) {
+    var el = markerEl(slug);
+    if (el) el.classList.toggle('is-hover', on);
+  }
+
+  /* ------------------------------------------------------------------
+     SELECTING A PLACE
+     ------------------------------------------------------------------ */
+  function select(slug, opts) {
+    var p = state.bySlug[slug];
+    if (!p) return;
+    var animate = !opts || opts.animate !== false;
+    if (state.selected && state.markers[state.selected]) {
+      var prev = markerEl(state.selected);
+      if (prev) prev.classList.remove('is-selected');
+      state.markers[state.selected].setZIndexOffset(0);
+    }
+    state.selected = slug;
+    var el = markerEl(slug);
+    if (el) el.classList.add('is-selected');
+    state.markers[slug].setZIndexOffset(1000);
+
+    renderDetail(p);
+    showView('detail');
+    if (isMobile() && state.sheet === 'peek') setSheet('half');
+    focusPlace(p, animate);
+    setUrl(slug);
+  }
+
+  function clearSelection() {
+    if (state.selected) {
+      var el = markerEl(state.selected);
+      if (el) el.classList.remove('is-selected');
+      if (state.markers[state.selected]) state.markers[state.selected].setZIndexOffset(0);
+    }
+    var last = state.selected;
+    state.selected = null;
+    showView('list');
+    renderList();
+    setUrl(null);
+    var btn = last && listEl.querySelector('[data-slug="' + last + '"]');
+    if (btn) btn.focus({ preventScroll: false });
+  }
+
+  function renderDetail(p) {
+    $('detail-name').textContent = p.name;
+    $('detail-address-text').textContent = p.address;
+    $('detail-address').hidden = !p.address;
+
+    var photo = $('detail-photo'), img = $('detail-img');
+    if (p.image) {
+      photo.hidden = false;
+      img.onerror = function () { photo.hidden = true; };
+      img.referrerPolicy = 'no-referrer';
+      img.alt = 'Photo of ' + p.name;
+      img.src = p.image;
+    } else {
+      photo.hidden = true;
+      img.removeAttribute('src');
+    }
+
+    $('directions').href = 'https://www.google.com/maps/dir/?api=1&destination=' + p.lat + ',' + p.lng;
+    var site = $('website');
+    site.hidden = !p.website;
+    if (p.website) site.href = p.website; else site.removeAttribute('href');
+
+    var textEl = $('detail-text');
+    textEl.textContent = '';
+    var body = p.description || p.summary;
+    body.split(/\n\s*\n|\n/).forEach(function (para) {
+      if (!para.trim()) return;
+      var el = document.createElement('p');
+      el.textContent = para.trim();
+      textEl.appendChild(el);
+    });
+    detailView.querySelector('.scroll').scrollTop = 0;
+  }
+
+  function showView(name) {
+    var detail = name === 'detail';
+    listView.hidden = detail;
+    detailView.hidden = !detail;
+    if (detail) $('detail-name').focus({ preventScroll: true });
+  }
+
+  function focusPlace(p, animate) {
+    var zoom = Math.max(map.getZoom(), CONFIG.FOCUS_ZOOM);
+    var target = L.latLng(p.lat, p.lng);
+    if (isMobile()) {
+      // Keep the place above the bottom sheet.
+      var offset = sheetSizes()[state.sheet] / 2;
+      target = map.unproject(map.project(target, zoom).add([0, offset]), zoom);
+    }
+    if (animate) map.flyTo(target, zoom, { duration: 0.6 }); else map.setView(target, zoom);
+  }
+
+  function fitAll() {
+    if (state.places.length === 1) {
+      map.setView([state.places[0].lat, state.places[0].lng], CONFIG.FOCUS_ZOOM);
+      return;
+    }
+    var bounds = L.latLngBounds(state.places.map(function (p) { return [p.lat, p.lng]; }));
+    map.fitBounds(bounds, {
+      paddingTopLeft: [50, 60],
+      paddingBottomRight: [50, isMobile() ? state.peekH + 40 : 50],
+      maxZoom: CONFIG.FOCUS_ZOOM
+    });
+  }
+
+  function setUrl(slug) {
+    try {
+      var url = new URL(window.location.href);
+      if (slug) url.searchParams.set('place', slug); else url.searchParams.delete('place');
+      window.history.replaceState(null, '', url.toString());
+    } catch (e) { /* Some browsers block this for local files. */ }
+  }
+
+  /* ------------------------------------------------------------------
+     PHONE BOTTOM SHEET
+     ------------------------------------------------------------------ */
+  function sheetSizes() {
+    var h = app.clientHeight;
+    var peek = Math.min(state.peekH, h * 0.45);
+    return { peek: peek, half: Math.max(peek, Math.round(h * 0.52)), full: Math.max(peek, h - 48) };
+  }
+
+  function measurePeek() {
+    if (!isMobile() || listView.hidden) return;
+    state.peekH = grab.offsetHeight + listHeader.offsetHeight + 4;
+  }
+
+  function setSheet(name) {
+    state.sheet = name;
+    grab.setAttribute('aria-expanded', String(name !== 'peek'));
+    if (!isMobile()) { panel.style.height = ''; return; }
+    panel.style.height = sheetSizes()[name] + 'px';
+  }
+
+  function cycleSheet() {
+    setSheet(state.sheet === 'peek' ? 'half' : state.sheet === 'half' ? 'full' : 'peek');
+  }
+
+  (function enableDrag() {
+    var startY = 0, startH = 0, dragging = false, moved = false;
+    grab.addEventListener('pointerdown', function (e) {
+      if (!isMobile()) return;
+      dragging = true; moved = false;
+      startY = e.clientY; startH = panel.offsetHeight;
+      panel.classList.add('dragging');
+      grab.setPointerCapture(e.pointerId);
+    });
+    grab.addEventListener('pointermove', function (e) {
+      if (!dragging) return;
+      var dy = startY - e.clientY;
+      if (Math.abs(dy) > 4) moved = true;
+      var s = sheetSizes();
+      panel.style.height = Math.max(s.peek, Math.min(s.full, startH + dy)) + 'px';
+    });
+    var end = function () {
+      if (!dragging) return;
+      dragging = false;
+      panel.classList.remove('dragging');
+      if (!moved) { cycleSheet(); return; }
+      var h = panel.offsetHeight, s = sheetSizes();
+      var nearest = ['peek', 'half', 'full'].reduce(function (best, k) {
+        return Math.abs(s[k] - h) < Math.abs(s[best] - h) ? k : best;
+      }, 'peek');
+      setSheet(nearest);
+    };
+    grab.addEventListener('pointerup', end);
+    grab.addEventListener('pointercancel', end);
+    grab.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); cycleSheet(); }
+    });
+  })();
+
+  /* ------------------------------------------------------------------
+     EVENTS
+     ------------------------------------------------------------------ */
+  $('back-btn').addEventListener('click', clearSelection);
+  searchEl.addEventListener('input', function () { state.query = searchEl.value; renderList(); });
+  searchEl.addEventListener('focus', function () { if (isMobile()) setSheet('full'); });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && !detailView.hidden) clearSelection();
+  });
+  map.on('click', function () {
+    if (isMobile() && state.sheet !== 'peek') setSheet('peek');
+  });
+
+  var resizeTimer;
+  function onResize() {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(function () {
+      measurePeek();
+      setSheet(state.sheet);
+      map.invalidateSize();
+    }, 100);
+  }
+  window.addEventListener('resize', onResize);
+  if (mobileQuery.addEventListener) mobileQuery.addEventListener('change', onResize);
+
+  var hintTimer;
+  function showHint(text) {
+    hintEl.textContent = text;
+    hintEl.classList.add('visible');
+    clearTimeout(hintTimer);
+    hintTimer = setTimeout(function () { hintEl.classList.remove('visible'); }, 1600);
+  }
+
+  function setStatus(text, isError) {
+    statusEl.hidden = !text;
+    statusEl.textContent = text || '';
+    statusEl.classList.toggle('error', !!isError);
+  }
+
+  /* ------------------------------------------------------------------
+     START
+     ------------------------------------------------------------------ */
+  measurePeek();
+  setSheet('peek');
+  setStatus('Loading places…');
+
+  loadRows().then(function (rows) {
+    state.places = normalize(rows);
+    state.places.forEach(function (p) { state.bySlug[p.slug] = p; });
+    if (!state.places.length) { setStatus('No places to show yet.', true); return; }
+    setStatus('');
+    measurePeek();
+    setSheet(state.sheet);
+    renderMarkers();
+    renderList();
+    fitAll();
+    var slug = new URLSearchParams(window.location.search).get('place');
+    if (slug && state.bySlug[slug]) select(slug, { animate: false });
+  }).catch(function (err) {
+    console.error(err);
+    setStatus("The map couldn't load its places. Please try again later.", true);
+  });
+})();
+</script>
+</body>
+</html>
